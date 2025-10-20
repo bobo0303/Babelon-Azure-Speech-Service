@@ -1,0 +1,23 @@
+typing-extensions>=4.11,<5  
+requests==2.32.2
+python-multipart
+httpx[http2]
+tqdm>=4.62.1
+numpy==1.23.1  
+uvicorn>=0.21.1  
+fastapi[all]
+starlette>=0.26.1  
+numba
+more-itertools
+tiktoken
+librosa
+soundfile
+ffmpeg-python
+opencc-python-reimplemented
+pytz==2022.1  
+
+# sse
+sseclient
+
+# Azure Speech SDk
+azure-cognitiveservices-speech
