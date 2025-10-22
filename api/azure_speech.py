@@ -207,6 +207,28 @@ class AzureSpeechModel:
         recognition_done = False
         timeout_occurred = False
         
+        def stop_recognizer_async(reason="unknown"):
+            """
+            Unified asynchronous method to stop the recognizer without blocking.
+            
+            Args:
+                reason (str): Reason for stopping (for logging)
+            
+            Returns:
+                threading.Thread: The thread handling the stop operation
+            """
+            def stop_worker():
+                try:
+                    recognizer.stop_continuous_recognition()
+                    logger.debug(f" | {operation_name} recognizer stopped successfully ({reason}) | ")
+                except Exception as e:
+                    logger.error(f" | Failed to stop continuous {operation_name.lower()} ({reason}): {e} | ")
+            
+            stop_thread = threading.Thread(target=stop_worker)
+            stop_thread.daemon = True
+            stop_thread.start()
+            return stop_thread
+        
         def on_result_received(evt):
             if evt.result.text:
                 transcription_results.append(evt.result.text)
@@ -236,10 +258,7 @@ class AzureSpeechModel:
             if not recognition_done:
                 timeout_occurred = True
                 logger.warning(f" | {operation_name} has exceeded the upper limit time and has been stopped. | ")
-                try:
-                    recognizer.stop_continuous_recognition()
-                except Exception as e:
-                    logger.error(f" | Failed to stop continuous {operation_name.lower()}: {e} | ")
+                stop_recognizer_async("timeout")
         
         # Connect callbacks - handle both SpeechRecognizer and TranslationRecognizer
         recognizer.recognized.connect(on_result_received)
@@ -263,8 +282,11 @@ class AzureSpeechModel:
             while not recognition_done and not timeout_occurred:
                 time.sleep(0.1)
                 
-            # Stop recognition
-            recognizer.stop_continuous_recognition()
+            # Stop recognition asynchronously to avoid blocking
+            stop_thread = stop_recognizer_async("normal completion")
+            
+            # Give the stop operation a moment to complete, but don't wait too long
+            stop_thread.join(timeout=2.0)  # Wait up to 2 seconds for graceful shutdown
             
         except Exception as e:
             if timeout_occurred:
@@ -362,7 +384,7 @@ class AzureSpeechModel:
                 # Language matching and configuration for specified language
                 language = LANGUAGE_MATCH.get(language, language)
                 speech_config.speech_recognition_language = language
-                
+
                 recognizer = speechsdk.SpeechRecognizer(
                     speech_config=speech_config,
                     audio_config=audio_config
