@@ -49,10 +49,10 @@ To use the service, you need to create a configuration file using the `/upload_c
 
 ```bash
 # Build the Docker image
-docker build -t azure-speech-babelon .
+docker build -t azure-speech-babelon:v0.0.1 .
 
-# Run the container
-docker run -p 80:80 -v ./logs:/app/logs azure-speech-babelon
+# Run the container (A100)
+docker run -d -it --gpus all --shm-size 32G --runtime nvidia --device=/dev/nvidia-uvm --device=/dev/nvidia-uvm-tools --device=/dev/nvidiactl --device=/dev/nvidia0 --network host --name Azure_Speech_Babelon -v /userdata/bobo/Azure_Speech_Babelon:/mnt azurespeechbabelon:v0.0.1 bash
 ```
 
 ### Manual Installation
