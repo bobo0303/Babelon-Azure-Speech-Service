@@ -2,14 +2,12 @@ import os
 import time  
 import json
 import logging  
+import threading
 import logging.handlers
 import azure.cognitiveservices.speech as speechsdk
 
-from queue import Queue  
-
-from lib.constant import DEFAULT_CONFIG, LANGUAGE_LIST, LANGUAGE_MATCH, LANGUAGE_MATCH_BACK
+from lib.constant import DEFAULT_CONFIG, LANGUAGE_LIST, LANGUAGE_MATCH, LANGUAGE_MATCH_BACK, WAITING_TIME
 from api.audio_utils import calculate_rtf
-  
   
 logger = logging.getLogger(__name__)  
   
@@ -123,6 +121,194 @@ class AzureSpeechModel:
             logger.debug(f" | Added {len(words)} phrases to recognition grammar | ")
         logger.debug(f" | Setup PhraseList time: {time.time() - start_time:.2f} | ")
     
+    def _configure_timeout_settings(self, config):
+        """
+        Configure extended timeout settings for longer audio files.
+        
+        Args:
+            config: Azure Speech config instance (SpeechConfig or SpeechTranslationConfig)
+        """
+        # Configure extended timeout settings for longer audio files
+        config.set_property(
+            speechsdk.PropertyId.SpeechServiceConnection_EndSilenceTimeoutMs, "5000"  # 5 seconds
+        )
+        config.set_property(
+            speechsdk.PropertyId.SpeechServiceConnection_InitialSilenceTimeoutMs, "10000"  # 10 seconds
+        )
+        # Disable audio logging for privacy and performance optimization
+        config.set_property(
+            speechsdk.PropertyId.SpeechServiceConnection_EnableAudioLogging, "false"
+        )
+        logger.debug(" | Configured extended timeout settings (EndSilence: 5s, InitialSilence: 10s) | ")
+
+    # def _recognize_with_timeout(self, recognizer, operation_name="Recognition"):
+    #     """
+    #     Generic timeout wrapper for Azure Speech recognition operations.
+        
+    #     Args:
+    #         recognizer: Azure Speech recognizer instance
+    #         operation_name (str): Name of the operation for logging
+            
+    #     Returns:
+    #         tuple: (result, timeout_occurred)
+    #             - result: Recognition result or None if timeout
+    #             - timeout_occurred (bool): True if timeout occurred
+    #     """
+
+    #     result = None
+    #     timeout_occurred = False
+        
+    #     def timeout_handler():
+    #         nonlocal timeout_occurred
+    #         time.sleep(WAITING_TIME)
+    #         if result is None:  # Still running
+    #             timeout_occurred = True
+    #             logger.warning(f" | {operation_name} has exceeded the upper limit time and has been stopped | ")
+    #             try:
+    #                 # Use unified method for all recognizer types
+    #                 recognizer.stop_continuous_recognition()
+    #                 logger.debug(f" | Called stop_continuous_recognition() | ")
+    #             except Exception as e:
+    #                 logger.error(f" | Failed to stop recognizer: {e} | ")
+        
+    #     # Start timeout timer
+    #     timeout_thread = threading.Thread(target=timeout_handler)
+    #     timeout_thread.daemon = True
+    #     timeout_thread.start()
+        
+    #     try:
+    #         result = recognizer.recognize_once()
+    #     except Exception as e:
+    #         if timeout_occurred:
+    #             logger.info(f" | {operation_name} stopped due to timeout | ")
+    #             return None, True
+    #         else:
+    #             raise e
+        
+    #     return result, timeout_occurred
+    
+    def _continuous_recognition_with_timeout(self, recognizer, operation_name="Recognition", is_translation=False):
+        """
+        Universal continuous recognition wrapper for both speech recognition and translation.
+        
+        Args:
+            recognizer: Azure Speech recognizer instance (SpeechRecognizer or TranslationRecognizer)
+            operation_name (str): Name of the operation for logging
+            is_translation (bool): True for TranslationRecognizer, False for SpeechRecognizer
+            
+        Returns:
+            tuple: For translation: (combined_transcription, combined_translations, timeout_occurred)
+                   For recognition: (combined_text, timeout_occurred)
+        """
+
+        # Common variables
+        transcription_results = []
+        translation_results = {} if is_translation else None
+        recognition_done = False
+        timeout_occurred = False
+        
+        def on_result_received(evt):
+            if evt.result.text:
+                transcription_results.append(evt.result.text)
+                logger.debug(f" | {operation_name} segment: {evt.result.text} | ")
+                
+                # Handle translation results if this is a translation operation
+                if is_translation and hasattr(evt.result, 'translations'):
+                    for target_lang in evt.result.translations:
+                        if target_lang not in translation_results:
+                            translation_results[target_lang] = []
+                        translation_results[target_lang].append(evt.result.translations[target_lang])
+                        logger.debug(f" | {target_lang}: {evt.result.translations[target_lang]} | ")
+        
+        def on_canceled(evt):
+            nonlocal recognition_done
+            recognition_done = True
+            logger.debug(f" | {operation_name} canceled: {evt.result.cancellation_details} | ")
+        
+        def on_session_stopped(evt):
+            nonlocal recognition_done
+            recognition_done = True
+            logger.debug(f" | {operation_name} session stopped | ")
+        
+        def timeout_handler():
+            nonlocal timeout_occurred, recognition_done
+            time.sleep(WAITING_TIME)
+            if not recognition_done:
+                timeout_occurred = True
+                logger.warning(f" | {operation_name} has exceeded the upper limit time and has been stopped. | ")
+                try:
+                    recognizer.stop_continuous_recognition()
+                except Exception as e:
+                    logger.error(f" | Failed to stop continuous {operation_name.lower()}: {e} | ")
+        
+        # Connect callbacks - handle both SpeechRecognizer and TranslationRecognizer
+        recognizer.recognized.connect(on_result_received)
+        recognizer.canceled.connect(on_canceled) 
+        recognizer.session_stopped.connect(on_session_stopped)
+        
+        # Optional: Connect recognizing event for intermediate results (mainly for TranslationRecognizer)
+        if hasattr(recognizer, 'recognizing') and is_translation:
+            recognizer.recognizing.connect(lambda evt: None)
+        
+        # Start timeout timer
+        timeout_thread = threading.Thread(target=timeout_handler)
+        timeout_thread.daemon = True
+        timeout_thread.start()
+        
+        try:
+            # Start continuous recognition
+            recognizer.start_continuous_recognition()
+            
+            # Wait for recognition to complete or timeout
+            while not recognition_done and not timeout_occurred:
+                time.sleep(0.1)
+                
+            # Stop recognition
+            recognizer.stop_continuous_recognition()
+            
+        except Exception as e:
+            if timeout_occurred:
+                logger.info(f" | {operation_name} stopped due to timeout | ")
+            else:
+                raise e
+        
+        # Combine all results with intelligent spacing
+        if transcription_results:
+            # Join segments and clean up spacing
+            combined_text = " ".join(transcription_results).strip()
+            
+            # Clean up excessive spacing for Chinese text
+            import re
+            # Remove multiple spaces between Chinese characters
+            combined_text = re.sub(r'(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])', '', combined_text)
+            # Remove spaces around Chinese punctuation
+            combined_text = re.sub(r'\s*([，。？！；：])\s*', r'\1', combined_text)
+            # Clean up any remaining multiple spaces
+            combined_text = re.sub(r'\s+', ' ', combined_text).strip()
+            
+            combined_transcription = combined_text
+        else:
+            combined_transcription = ""
+        
+        if is_translation:
+            # Return translation format: (transcription, translations_dict, timeout)
+            combined_translations = {}
+            for target_lang, segments in translation_results.items():
+                # Join segments and clean up spacing for translations
+                joined_text = " ".join(segments).strip()
+                
+                # Clean up excessive spacing for Chinese text in translations
+                import re
+                joined_text = re.sub(r'(?<=[\u4e00-\u9fff])\s+(?=[\u4e00-\u9fff])', '', joined_text)
+                joined_text = re.sub(r'\s*([，。？！；：])\s*', r'\1', joined_text)
+                joined_text = re.sub(r'\s+', ' ', joined_text).strip()
+                
+                combined_translations[target_lang] = joined_text
+            return combined_transcription, combined_translations, timeout_occurred
+        else:
+            # Return recognition format: (text, timeout)
+            return combined_transcription, timeout_occurred
+    
 
     def transcribe(self, audio_file_path, ori, prev_text=""):  
         """
@@ -149,6 +335,9 @@ class AzureSpeechModel:
                 subscription=self.subscription_key,
                 region=self.service_region
             )
+            
+            # Configure extended timeout settings for longer audio files
+            self._configure_timeout_settings(speech_config)
             
             # Configure custom endpoint (if available)
             if self.endpoint_id:
@@ -184,47 +373,48 @@ class AzureSpeechModel:
             # Apply custom vocabulary and previous text context
             self._set_dict(prev_text, recognizer)
             
-            # Perform speech recognition
+            # Perform speech recognition with timeout using continuous recognition
             logger.info(f" | Starting transcription for {audio_file_path} | ")
-            result = recognizer.recognize_once()
+            
+            transcription_text, timeout_occurred = self._continuous_recognition_with_timeout(recognizer, "Transcription", is_translation=False)
+            
+            if timeout_occurred:
+                return "", 0, time.time() - start_time, "unknown"
             
             # Process recognition results
-            if result.reason == speechsdk.ResultReason.RecognizedSpeech:
-                transcription_text = result.text
+            if transcription_text:
                 logger.debug(f" | Transcription successful: {transcription_text} | ")
-            elif result.reason == speechsdk.ResultReason.NoMatch:
-                transcription_text = ""
-                logger.warning(f" | No speech could be recognized | ")
-            elif result.reason == speechsdk.ResultReason.Canceled:
-                cancellation_details = result.cancellation_details
-                transcription_text = ""
-                logger.error(f" | Speech Recognition canceled: {cancellation_details.reason} | ")
-                if cancellation_details.reason == speechsdk.CancellationReason.Error:
-                    logger.error(f" | Error details: {cancellation_details.error_details} | ")
             else:
-                transcription_text = ""
-                logger.error(f" | Unexpected result reason: {result.reason} | ")
+                logger.warning(f" | No speech could be recognized | ")
             
             # Calculate performance metrics
             end_time = time.time()
             inference_time = end_time - start_time
             
-            # Calculate RTF (Real Time Factor) - lower is better
-            rtf = calculate_rtf(result, audio_file_path, inference_time)
+            # Calculate RTF (Real Time Factor) - use dummy result for continuous recognition
+            dummy_result = type('Result', (), {
+                'duration': None,
+                'text': transcription_text
+            })()
+            rtf = calculate_rtf(dummy_result, audio_file_path, inference_time)
 
             # Extract detected language from auto-detection results (only if auto-detection was used)
             if ori is None or ori.strip() == "":
-                # Auto-detection was used, get the detected language
-                # Use the PropertyId enum instead of string key
-                language = result.properties.get(speechsdk.PropertyId.SpeechServiceConnection_AutoDetectSourceLanguageResult, "unknown")
-                logger.info(f" | No source language specified. Auto-detected language: '{language}' | ")
-                # Fallback: If we still have unknown and the text is Chinese, assume zh-TW
-                if language == "unknown" and transcription_text:
+                # For continuous recognition, we need to detect language from the text
+                logger.info(f" | No source language specified. Using text-based detection | ")
+                # Fallback: If we have text, detect language from content
+                if transcription_text:
                     # Check if text contains Chinese characters
                     has_chinese = any('\u4e00' <= char <= '\u9fff' for char in transcription_text)
                     if has_chinese:
                         language = "zh-TW"
                         logger.debug(f" | Detected Chinese characters, setting language to zh-TW | ")
+                    else:
+                        # Simple heuristic for other languages
+                        language = "en-US"  # Default to English if no Chinese detected
+                        logger.debug(f" | No Chinese characters detected, defaulting to en-US | ")
+                else:
+                    language = "unknown"
             else:
                 # Specific language was provided, use the mapped language
                 language = LANGUAGE_MATCH.get(ori, ori)
@@ -234,7 +424,7 @@ class AzureSpeechModel:
             
         except Exception as e:
             logger.error(f" | Transcription error: {e} | ")
-            return "", 0, 0, "unknown"
+            return "", 0, time.time() - start_time, "unknown"
 
 
     def translate(self, audio_file_path, ori, prev_text=""):
@@ -262,6 +452,9 @@ class AzureSpeechModel:
                 subscription=self.subscription_key,
                 region=self.service_region
             )
+            
+            # Configure extended timeout settings for longer audio files
+            self._configure_timeout_settings(translation_config)
             
             # Configure custom endpoint (if available)
             if self.endpoint_id:
@@ -304,52 +497,46 @@ class AzureSpeechModel:
             # Apply custom vocabulary and previous text context
             self._set_dict(prev_text, recognizer)
 
-            # Perform translation recognition
+            # Perform translation recognition with timeout
             logger.info(f" | Starting translation for {audio_file_path} | ")
-            result = recognizer.recognize_once()
+            
+            # Use continuous translation for longer audio files
+            transcription_text, raw_translations, timeout_occurred = self._continuous_recognition_with_timeout(recognizer, "Translation", is_translation=True)
+            
+            if timeout_occurred:
+                return "", {}, 0, time.time() - start_time
             
             # Process translation results
             translations_text = {}
-            transcription_text = ""
             
-            if result.reason == speechsdk.ResultReason.TranslatedSpeech:
-                transcription_text = result.text
+            if transcription_text:
                 logger.debug(f" | Translation successful: {transcription_text} | ")
                 
-                # Extract all translation results
-                for target_lang in result.translations:
+                # Convert raw translations to expected format
+                for target_lang, translation in raw_translations.items():
                     match_back_language = LANGUAGE_MATCH_BACK.get(target_lang, target_lang)
-                    translations_text[match_back_language] = result.translations[target_lang]
-                    logger.debug(f" | {match_back_language}: {result.translations[target_lang]} | ")
-                    
-            elif result.reason == speechsdk.ResultReason.RecognizedSpeech:
-                # Only recognition, no translation (possible target language configuration issue)
-                transcription_text = result.text
-                logger.warning(f" | Only recognized speech, no translation: {transcription_text} | ")
-                
-            elif result.reason == speechsdk.ResultReason.NoMatch:
-                logger.warning(f" | No speech could be recognized for translation | ")
-                
-            elif result.reason == speechsdk.ResultReason.Canceled:
-                cancellation_details = result.cancellation_details
-                logger.error(f" | Translation canceled: {cancellation_details.reason} | ")
-                if cancellation_details.reason == speechsdk.CancellationReason.Error:
-                    logger.error(f" | Error details: {cancellation_details.error_details} | ")
+                    translations_text[match_back_language] = translation
+                    logger.debug(f" | {match_back_language}: {translation} | ")
             else:
-                logger.error(f" | Unexpected translation result reason: {result.reason} | ")
+                logger.warning(f" | No speech could be recognized for translation | ")
             
             # Calculate performance metrics
             end_time = time.time()
             translate_time = end_time - start_time
             
-            # Calculate RTF (Real Time Factor) - lower is better
-            rtf = calculate_rtf(result, audio_file_path, translate_time)
+            # Calculate RTF (Real Time Factor) - use dummy result for continuous translation
+            # Create a mock result object for RTF calculation with proper attributes
+            dummy_result = type('Result', (), {
+                'duration': None,  # Use 'duration' instead of 'audio_duration'
+                'text': transcription_text
+            })()
+            rtf = calculate_rtf(dummy_result, audio_file_path, translate_time)
 
             return transcription_text, translations_text, rtf, translate_time
 
         except Exception as e:
             logger.error(f" | Translation error: {e} | ")
-            return "", {}, 0, 0
+            return "", {}, 0, time.time() - start_time
 
     def key_test(self, subscription_key=None, service_region=None, endpoint_id=None, name=None):
         """
