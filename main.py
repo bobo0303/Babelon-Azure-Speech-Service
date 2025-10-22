@@ -6,13 +6,10 @@ import pytz
 import logging  
 import uvicorn  
 import datetime  
-import threading 
-from queue import Queue  
 from threading import Thread, Event  
 from api.azure_speech import AzureSpeechModel  
-from api.threading_api import audio_transcribe, audio_translate, waiting_times, stop_thread
 from lib.base_object import BaseResponse, Status
-from lib.constant import AudioTranscriptionResponse, AudioTranslationResponse, WAITING_TIME, LANGUAGE_LIST, DEFAULT_RESULT
+from lib.constant import AudioTranscriptionResponse, AudioTranslationResponse, LANGUAGE_LIST, DEFAULT_RESULT
 from api.utils import write_txt
 
 if not os.path.exists("./audio"):  
@@ -275,58 +272,42 @@ async def transcription(
   
     # Check if the audio file exists  
     if not os.path.exists(audio_buffer):  
-        return BaseResponse(status="FAILED", message=" | The audio file does not exist, please check the audio path. | ", data=response_data)  
+        return BaseResponse(status=Status.FAILED, message=" | The audio file does not exist, please check the audio path. | ", data=response_data)  
   
     # Check if the model has been loaded  
     if model.model_version is None:  
-        return BaseResponse(status="FAILED", message=" | model haven't been load successfully. may out of memory please check again | ", data=response_data)  
+        return BaseResponse(status=Status.FAILED, message=" | model haven't been load successfully. may out of memory please check again | ", data=response_data)  
 
     # Check if the languages are in the supported language list  
     if o_lang not in LANGUAGE_LIST and o_lang is not None and o_lang != "":  
         logger.info(f" | The original language is not in LANGUAGE_LIST: {LANGUAGE_LIST}. | ")  
-        return BaseResponse(status="FAILED", message=f" | The original language is not in LANGUAGE_LIST: {LANGUAGE_LIST}. | ", data=response_data)  
+        return BaseResponse(status=Status.FAILED, message=f" | The original language is not in LANGUAGE_LIST: {LANGUAGE_LIST}. | ", data=response_data)  
   
     try:  
-        # Create a queue to hold the return value  
-        result_queue = Queue()  
-        # Create an event to signal stopping  
-        stop_event = threading.Event()  
-  
-        # Create timing thread and inference thread  
-        time_thread = threading.Thread(target=waiting_times, args=(stop_event, model, WAITING_TIME))  
-        inference_thread = threading.Thread(target=audio_transcribe, args=(model, audio_buffer, result_queue, o_lang, stop_event, prev_text))  
-  
-        # Start the threads  
-        time_thread.start()  
-        inference_thread.start()  
-  
-        # Wait for timing thread to complete and check if the inference thread is active to close  
-        time_thread.join()  
-        stop_thread(inference_thread)  
-  
+        # main transcription process
+        transcription_text, rtf, transcription_time, language = model.transcribe(audio_buffer, o_lang, prev_text=prev_text)
+        
         # Remove the audio buffer file  
         if os.path.exists(audio_buffer):
             os.remove(audio_buffer)  
   
         # Get the result from the queue  
-        if not result_queue.empty():  
-            transcription_test, rtf, transcription_time, language = result_queue.get()  
-            response_data.transcription_text = transcription_test
-            response_data.transcribe_time = transcription_time  
-  
-            logger.debug(response_data.model_dump_json())  
-            logger.info(f" | device_id: {response_data.device_id} | audio_uid: {response_data.audio_uid} | language: {language} | ")  
-            logger.info(f" | Transcription: {transcription_test} | ")
-            logger.info(f" | RTF: {rtf:.2f} | transcribe time: {transcription_time:.2f} seconds. |")  
-            state = "OK"  
-        else:  
-            logger.info(f" | Transcription has exceeded the upper limit time and has been stopped |")  
-            state = "FAILED"  
-  
+        response_data.transcription_text = transcription_text
+        response_data.transcribe_time = transcription_time  
+
+        logger.debug(response_data.model_dump_json())  
+        logger.info(f" | device_id: {response_data.device_id} | audio_uid: {response_data.audio_uid} | language: {language} | ")  
+        logger.info(f" | Transcription: {transcription_text} | ")
+        logger.info(f" | RTF: {rtf:.2f} | transcribe time: {transcription_time:.2f} seconds. |")  
+        state = Status.OK
+        
+        if transcription_text == "" and rtf == 0 and language == "unknown":
+            state = Status.FAILED
+
         return BaseResponse(status=state, message=f" | {language}: {response_data.transcription_text} | ", data=response_data)  
     except Exception as e:  
         logger.error(f" | Transcription() error: {e} | ")  
-        return BaseResponse(status="FAILED", message=f" | Transcription() error: {e} | ", data=response_data)  
+        return BaseResponse(status=Status.FAILED, message=f" | Transcription() error: {e} | ", data=response_data)  
     
     
 @app.post("/translate")
@@ -387,69 +368,53 @@ async def translate(
   
     # Check if the audio file exists  
     if not os.path.exists(audio_buffer):  
-        return BaseResponse(status="FAILED", message=" | The audio file does not exist, please check the audio path. | ", data=response_data)  
+        return BaseResponse(status=Status.FAILED, message=" | The audio file does not exist, please check the audio path. | ", data=response_data)  
   
     # Check if the model has been loaded  
     if model.model_version is None:  
-        return BaseResponse(status="FAILED", message=" | model haven't been load successfully. may out of memory please check again | ", data=response_data)  
+        return BaseResponse(status=Status.FAILED, message=" | model haven't been load successfully. may out of memory please check again | ", data=response_data)  
   
     # Check if the languages are in the supported language list  
     if o_lang not in LANGUAGE_LIST:  
         logger.info(f" | The original language is not in LANGUAGE_LIST: {LANGUAGE_LIST}. | ")  
-        return BaseResponse(status="FAILED", message=f" | The original language is not in LANGUAGE_LIST: {LANGUAGE_LIST}. | ", data=response_data)  
+        return BaseResponse(status=Status.FAILED, message=f" | The original language is not in LANGUAGE_LIST: {LANGUAGE_LIST}. | ", data=response_data)  
   
     try:  
-        # Create a queue to hold the return value  
-        result_queue = Queue()  
-        # Create an event to signal stopping  
-        stop_event = threading.Event()  
-  
-        # Create timing thread and inference thread  
-        time_thread = threading.Thread(target=waiting_times, args=(stop_event, model, WAITING_TIME))  
-        inference_thread = threading.Thread(target=audio_translate, args=(model, audio_buffer, result_queue, o_lang, stop_event, prev_text))  
-  
-        # Start the threads  
-        time_thread.start()  
-        inference_thread.start()  
-  
-        # Wait for timing thread to complete and check if the inference thread is active to close  
-        time_thread.join()  
-        stop_thread(inference_thread)  
+        # main translation process
+        transcription_text, translated_text, rtf, translate_time = model.translate(audio_buffer, o_lang, prev_text=prev_text)    
   
         # Remove the audio buffer file  
         if os.path.exists(audio_buffer):
             os.remove(audio_buffer)  
   
-        # Get the result from the queue  
-        if not result_queue.empty():  
-            transcription_text, translated_text, rtf, translate_time = result_queue.get()  
-            if translated_text is {}:
-                response_data.translate_text[o_lang] = transcription_text
-            else:
-                response_data.translate_text = translated_text
-            response_data.translate_time = translate_time
-            zh_text = response_data.translate_text.get("zh", "")
-            en_text = response_data.translate_text.get("en", "")
-            de_text = response_data.translate_text.get("de", "")
+        # Get the result 
+        if translated_text is {}:
+            response_data.translate_text[o_lang] = transcription_text
+        else:
+            response_data.translate_text = translated_text
+        response_data.translate_time = translate_time
+        zh_text = response_data.translate_text.get("zh", "")
+        en_text = response_data.translate_text.get("en", "")
+        de_text = response_data.translate_text.get("de", "")
 
-            logger.debug(response_data.model_dump_json())  
-            logger.info(f" | device_id: {response_data.device_id} | audio_uid: {response_data.audio_uid} | original language: {o_lang} |")  
-            logger.info(f" | {'#' * 75} | ")
-            logger.info(f" | ZH: {zh_text} | ")  
-            logger.info(f" | EN: {en_text} | ")  
-            logger.info(f" | DE: {de_text} | ")  
-            logger.info(f" | {'#' * 75} | ")
-            logger.info(f" | RTF: {rtf} | translate time: {translate_time:.2f} seconds. | ")  
-            state = "OK"  
-        else:  
-            zh_text = en_text = de_text = ""
-            logger.info(f" | Translate has exceeded the upper limit time and has been stopped |")  
-            state = "FAILED"
-        write_txt(zh_text, en_text, de_text, meeting_id, audio_uid, times)
+        logger.debug(response_data.model_dump_json())  
+        logger.info(f" | device_id: {response_data.device_id} | audio_uid: {response_data.audio_uid} | original language: {o_lang} |")  
+        logger.info(f" | {'#' * 75} | ")
+        logger.info(f" | ZH: {zh_text} | ")  
+        logger.info(f" | EN: {en_text} | ")  
+        logger.info(f" | DE: {de_text} | ")  
+        logger.info(f" | {'#' * 75} | ")
+        logger.info(f" | RTF: {rtf:.2f} | translate time: {translate_time:.2f} seconds. | ")  
+        state = Status.OK
+
+        if transcription_text == "" and translated_text is {} and rtf == 0:
+            state = Status.FAILED
+
+        # write_txt(zh_text, en_text, de_text, meeting_id, audio_uid, times)
         return BaseResponse(status=state, message=f" | ZH: {zh_text} | EN: {en_text} | DE: {de_text} | ", data=response_data)  
     except Exception as e:  
         logger.error(f" | translate() error: {e} | ")  
-        return BaseResponse(status="FAILED", message=f" | translate() error: {e} | ", data=response_data)  
+        return BaseResponse(status=Status.FAILED, message=f" | translate() error: {e} | ", data=response_data)  
 
 
 ##############################################################################
