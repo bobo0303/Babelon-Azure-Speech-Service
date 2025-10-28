@@ -445,7 +445,18 @@ def delete_old_audio_files():
             if current_time - file_creation_time > 24 * 60 * 60:  
                 os.remove(file_path)  
                 logger.info(f" | Deleted old file: {file_path} | ")  
-  
+                
+    config_path = "./lib"
+    for filename in os.listdir(config_path):
+        if filename.endswith(".json"):
+            file_path = os.path.join(config_path, filename)  
+            if os.path.isfile(file_path):  
+                file_creation_time = os.path.getctime(file_path)  
+                # Delete files older than 30 days  
+                if current_time - file_creation_time > 30 * 24 * 60 * 60:  
+                    os.remove(file_path)  
+                    logger.info(f" | Deleted old config: {file_path} | ")
+
 # Daily task scheduling  
 def schedule_daily_task(stop_event):  
     """
