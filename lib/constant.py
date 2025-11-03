@@ -8,17 +8,6 @@ DEFAULT_CONFIG = '/mnt/lib/Azure_Speech.json'
 #############################################################################
 
 WAITING_TIME = 10 # The whisper inference max waiting time (if over the time will stop it)
-
-#############################################################################
-
-class AudioTranscriptionResponse(BaseModel):
-    meeting_id: str
-    device_id: str
-    ori_lang: str
-    transcription_text: str
-    times: str
-    audio_uid: str
-    transcribe_time: float
     
 #############################################################################
 
@@ -26,18 +15,13 @@ class AudioTranslationResponse(BaseModel):
     meeting_id: str
     device_id: str
     ori_lang: str
-    translate_text: Dict[str, str]
+    transcription_text: str
+    text: Dict[str, str]
     times: str
     audio_uid: str
+    transcribe_time: float
     translate_time: float
     
-#############################################################################
-
-class TextTranslationResponse(BaseModel):
-    ori_lang: str
-    text: Dict[str, str]
-    translate_time: float
-
 #############################################################################
 
 # LANGUAGE_LIST = ['zh', 'en', 'ja', 'ko', "de", "es"]

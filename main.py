@@ -9,7 +9,7 @@ import datetime
 from threading import Thread, Event  
 from api.azure_speech import AzureSpeechModel  
 from lib.base_object import BaseResponse, Status
-from lib.constant import AudioTranscriptionResponse, AudioTranslationResponse, LANGUAGE_LIST, DEFAULT_RESULT
+from lib.constant import AudioTranslationResponse, LANGUAGE_LIST, DEFAULT_RESULT
 from api.utils import write_txt
 
 if not os.path.exists("./audio"):  
@@ -149,24 +149,23 @@ def HelloWorld(name:str=None):
 
 ##############################################################################  
 
-@app.post("/update_dictionary")
-async def update_dictionary(dictionary: str = Form(...)):
+@app.post("/set_prompt")
+async def set_prompt(prompt = Form(None)):
     """
-    Update dictionary with comma-separated words.
-    Input: "a,b, c,d,e" -> Output: ["a", "b", "c", "d", "e"]
+    Set the prompt for the model.
     """
-    if not dictionary.strip():
-        # Clear dictionary if empty string
+    if not prompt.strip() or prompt is None:
+        # Clear prompt if empty string
         model.update_dict([])
         logger.info(f" | Dictionary has been cleared. | ")
         return BaseResponse(message=" | Dictionary has been cleared. | ", data=[])
 
     # Split by comma and clean up each word
-    words = [word.strip() for word in dictionary.split(',')]
+    words = [word.strip() for word in prompt.split(',')]
     # Remove empty strings
     words = [word for word in words if word]
     
-    logger.info(f" | Input dictionary string: {dictionary} | ")
+    logger.info(f" | Input dictionary string: {prompt} | ")
     logger.info(f" | Processed dictionary list: {words} | ")
     
     # Update model dictionary
@@ -236,78 +235,78 @@ async def upload_custom_model(name: str = Form(...),
         return BaseResponse(status=Status.FAILED, message=f" | Upload failed | {message} | ", data=None)
     
 
-@app.post("/transcription")
-async def transcription(
-    file: UploadFile = File(...),  
-    meeting_id: str = Form(123),  
-    device_id: str = Form(123),  
-    audio_uid: str = Form(123),  
-    times: datetime.datetime = Form(...),  
-    o_lang: str = Form(""),  
-    prev_text: str = Form(""),
-):  
+# @app.post("/transcription")
+# async def transcription(
+#     file: UploadFile = File(...),  
+#     meeting_id: str = Form(123),  
+#     device_id: str = Form(123),  
+#     audio_uid: str = Form(123),  
+#     times: datetime.datetime = Form(...),  
+#     o_lang: str = Form(""),  
+#     prev_text: str = Form(""),
+# ):  
     
-    # Convert times to string format  
-    times = str(times)  
-    # Convert original language to lowercase  
-    if o_lang is not None:
-        o_lang = o_lang.lower()  
+#     # Convert times to string format  
+#     times = str(times)  
+#     # Convert original language to lowercase  
+#     if o_lang is not None:
+#         o_lang = o_lang.lower()  
     
-    # Create response data structure  
-    response_data = AudioTranscriptionResponse(  
-        meeting_id=meeting_id,  
-        device_id=device_id,  
-        ori_lang=o_lang,  
-        transcription_text="",
-        times=str(times),  
-        audio_uid=audio_uid,  
-        transcribe_time=0.0,  
-    )  
+#     # Create response data structure  
+#     response_data = AudioTranscriptionResponse(  
+#         meeting_id=meeting_id,  
+#         device_id=device_id,  
+#         ori_lang=o_lang,  
+#         transcription_text="",
+#         times=str(times),  
+#         audio_uid=audio_uid,  
+#         transcribe_time=0.0,  
+#     )  
   
-    # Save the uploaded audio file  
-    file_name = times + ".wav"  
-    audio_buffer = f"audio/{file_name}"  
-    with open(audio_buffer, 'wb') as f:  
-        f.write(file.file.read())  
+#     # Save the uploaded audio file  
+#     file_name = times + ".wav"  
+#     audio_buffer = f"audio/{file_name}"  
+#     with open(audio_buffer, 'wb') as f:  
+#         f.write(file.file.read())  
   
-    # Check if the audio file exists  
-    if not os.path.exists(audio_buffer):  
-        return BaseResponse(status=Status.FAILED, message=" | The audio file does not exist, please check the audio path. | ", data=response_data)  
+#     # Check if the audio file exists  
+#     if not os.path.exists(audio_buffer):  
+#         return BaseResponse(status=Status.FAILED, message=" | The audio file does not exist, please check the audio path. | ", data=response_data)  
   
-    # Check if the model has been loaded  
-    if model.model_version is None:  
-        return BaseResponse(status=Status.FAILED, message=" | model haven't been load successfully. may out of memory please check again | ", data=response_data)  
+#     # Check if the model has been loaded  
+#     if model.model_version is None:  
+#         return BaseResponse(status=Status.FAILED, message=" | model haven't been load successfully. may out of memory please check again | ", data=response_data)  
 
-    # Check if the languages are in the supported language list  
-    if o_lang not in LANGUAGE_LIST and o_lang is not None and o_lang != "":  
-        logger.info(f" | The original language is not in LANGUAGE_LIST: {LANGUAGE_LIST}. | ")  
-        return BaseResponse(status=Status.FAILED, message=f" | The original language is not in LANGUAGE_LIST: {LANGUAGE_LIST}. | ", data=response_data)  
+#     # Check if the languages are in the supported language list  
+#     if o_lang not in LANGUAGE_LIST and o_lang is not None and o_lang != "":  
+#         logger.info(f" | The original language is not in LANGUAGE_LIST: {LANGUAGE_LIST}. | ")  
+#         return BaseResponse(status=Status.FAILED, message=f" | The original language is not in LANGUAGE_LIST: {LANGUAGE_LIST}. | ", data=response_data)  
   
-    try:  
-        # main transcription process
-        transcription_text, rtf, transcription_time, language = model.transcribe(audio_buffer, o_lang, prev_text=prev_text)
+#     try:  
+#         # main transcription process
+#         transcription_text, rtf, transcription_time, language = model.transcribe(audio_buffer, o_lang, prev_text=prev_text)
         
-        # Remove the audio buffer file  
-        if os.path.exists(audio_buffer):
-            os.remove(audio_buffer)  
+#         # Remove the audio buffer file  
+#         if os.path.exists(audio_buffer):
+#             os.remove(audio_buffer)  
   
-        # Get the result from the queue  
-        response_data.transcription_text = transcription_text
-        response_data.transcribe_time = transcription_time  
+#         # Get the result from the queue  
+#         response_data.transcription_text = transcription_text
+#         response_data.transcribe_time = transcription_time  
 
-        logger.debug(response_data.model_dump_json())  
-        logger.info(f" | device_id: {response_data.device_id} | audio_uid: {response_data.audio_uid} | language: {language} | ")  
-        logger.info(f" | Transcription: {transcription_text} | ")
-        logger.info(f" | RTF: {rtf:.2f} | transcribe time: {transcription_time:.2f} seconds. |")  
-        state = Status.OK
+#         logger.debug(response_data.model_dump_json())  
+#         logger.info(f" | device_id: {response_data.device_id} | audio_uid: {response_data.audio_uid} | language: {language} | ")  
+#         logger.info(f" | Transcription: {transcription_text} | ")
+#         logger.info(f" | RTF: {rtf:.2f} | transcribe time: {transcription_time:.2f} seconds. |")  
+#         state = Status.OK
         
-        if transcription_text == "" and rtf == 0 and language == "unknown":
-            state = Status.FAILED
+#         if transcription_text == "" and rtf == 0 and language == "unknown":
+#             state = Status.FAILED
 
-        return BaseResponse(status=state, message=f" | {language}: {response_data.transcription_text} | ", data=response_data)  
-    except Exception as e:  
-        logger.error(f" | Transcription() error: {e} | ")  
-        return BaseResponse(status=Status.FAILED, message=f" | Transcription() error: {e} | ", data=response_data)  
+#         return BaseResponse(status=state, message=f" | {language}: {response_data.transcription_text} | ", data=response_data)  
+#     except Exception as e:  
+#         logger.error(f" | Transcription() error: {e} | ")  
+#         return BaseResponse(status=Status.FAILED, message=f" | Transcription() error: {e} | ", data=response_data)  
     
     
 @app.post("/translate")
@@ -317,8 +316,9 @@ async def translate(
     device_id: str = Form(123),  
     audio_uid: str = Form(123),  
     times: datetime.datetime = Form(...),  
-    o_lang: str = Form("zh"),  
+    o_lang: str = Form(""),  
     prev_text: str = Form(""),
+    use_translate: bool = Form(True) # True/False
 ):  
     """  
     Transcribe and translate an audio file.  
@@ -354,9 +354,11 @@ async def translate(
         meeting_id=meeting_id,  
         device_id=device_id,  
         ori_lang=o_lang,  
-        translate_text=DEFAULT_RESULT.copy(),  
+        transcription_text="",  
+        text=DEFAULT_RESULT.copy(),  
         times=str(times),  
         audio_uid=audio_uid,  
+        transcribe_time=0.0,  
         translate_time=0.0,  
     )  
   
@@ -374,47 +376,59 @@ async def translate(
     if model.model_version is None:  
         return BaseResponse(status=Status.FAILED, message=" | model haven't been load successfully. may out of memory please check again | ", data=response_data)  
   
-    # Check if the languages are in the supported language list  
-    if o_lang not in LANGUAGE_LIST:  
-        logger.info(f" | The original language is not in LANGUAGE_LIST: {LANGUAGE_LIST}. | ")  
-        return BaseResponse(status=Status.FAILED, message=f" | The original language is not in LANGUAGE_LIST: {LANGUAGE_LIST}. | ", data=response_data)  
-  
     try:  
-        # main translation process
-        transcription_text, translated_text, rtf, translate_time = model.translate(audio_buffer, o_lang, prev_text=prev_text)    
-  
-        # Remove the audio buffer file  
-        if os.path.exists(audio_buffer):
-            os.remove(audio_buffer)  
-  
-        # Get the result 
-        if translated_text is {}:
-            response_data.translate_text[o_lang] = transcription_text
+        if use_translate:
+            # main transcription process
+            if o_lang not in LANGUAGE_LIST:  
+                logger.info(f" | The original language is not in LANGUAGE_LIST: {LANGUAGE_LIST}. | ")  
+                return BaseResponse(status=Status.FAILED, message=f" | The original language is not in LANGUAGE_LIST: {LANGUAGE_LIST}. | ", data=response_data) 
+            
+            transcription_text, translated_text, rtf, translate_time = model.translate(audio_buffer, o_lang, prev_text=prev_text)    
         else:
-            response_data.translate_text = translated_text
-        response_data.translate_time = translate_time
-        zh_text = response_data.translate_text.get("zh", "")
-        en_text = response_data.translate_text.get("en", "")
-        de_text = response_data.translate_text.get("de", "")
-
-        logger.debug(response_data.model_dump_json())  
-        logger.info(f" | device_id: {response_data.device_id} | audio_uid: {response_data.audio_uid} | original language: {o_lang} |")  
-        logger.info(f" | {'#' * 75} | ")
-        logger.info(f" | ZH: {zh_text} | ")  
-        logger.info(f" | EN: {en_text} | ")  
-        logger.info(f" | DE: {de_text} | ")  
-        logger.info(f" | {'#' * 75} | ")
-        logger.info(f" | RTF: {rtf:.2f} | translate time: {translate_time:.2f} seconds. | ")  
-        state = Status.OK
-
-        if transcription_text == "" and translated_text is {} and rtf == 0:
-            state = Status.FAILED
-
-        # write_txt(zh_text, en_text, de_text, meeting_id, audio_uid, times)
-        return BaseResponse(status=state, message=f" | ZH: {zh_text} | EN: {en_text} | DE: {de_text} | ", data=response_data)  
+            # main translation process
+            if o_lang not in LANGUAGE_LIST and o_lang is not None and o_lang != "":  
+                o_lang = None
+            
+            transcription_text, rtf, transcription_time, language = model.transcribe(audio_buffer, o_lang, prev_text=prev_text)
     except Exception as e:  
-        logger.error(f" | translate() error: {e} | ")  
-        return BaseResponse(status=Status.FAILED, message=f" | translate() error: {e} | ", data=response_data)  
+        logger.error(f" | translation() error: {e} | ")  
+        return BaseResponse(status=Status.FAILED, message=f" | translation() error: {e} | ", data=response_data)
+
+    # Remove the audio buffer file  
+    if os.path.exists(audio_buffer):
+        os.remove(audio_buffer)  
+
+    response_data.transcription_text = transcription_text
+    if use_translate:
+        response_data.text = translated_text
+        response_data.translate_time = translate_time
+        zh_result = response_data.text.get("zh", "")
+        en_result = response_data.text.get("en", "")
+        de_result = response_data.text.get("de", "")
+    else:
+        response_data.ori_lang = language
+        language = language
+        response_data.transcribe_time = transcription_time
+        zh_result = en_result = de_result = ""
+
+    logger.debug(response_data.model_dump_json())
+    logger.info(f" | device_id: {response_data.device_id} | audio_uid: {response_data.audio_uid} | source language: {o_lang} | time: {times} | ")
+    logger.info(f" | Transcription: {transcription_text} | ")
+    if use_translate:
+        logger.info(f" | {'#' * 75} | ")
+        logger.info(f" | ZH: {zh_result} | ")  
+        logger.info(f" | EN: {en_result} | ")  
+        logger.info(f" | DE: {de_result} | ")  
+        logger.info(f" | {'#' * 75} | ")
+        logger.info(f" | RTF: {rtf} | translate {translate_time:.2f} seconds. | ")
+    else:
+        logger.info(f" | RTF: {rtf} | transcribe {transcription_time:.2f} seconds. | ")
+    state = Status.OK
+    
+    if transcription_text == "" and rtf == 0 and language == "unknown":
+        state = Status.FAILED
+
+    return BaseResponse(status=state, message=f" | Transcription: {transcription_text} | ZH: {zh_result} | EN: {en_result} | DE: {de_result} | ", data=response_data)
 
 
 ##############################################################################
